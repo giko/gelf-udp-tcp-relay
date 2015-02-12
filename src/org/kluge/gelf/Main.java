@@ -38,9 +38,11 @@ public class Main {
         Thread sender = new Thread(() -> {
             while (messageQueue.size() != 0) {
                 try {
-                    outToServer.write(messageQueue.peek());
-                    outToServer.flush();
-                    messageQueue.remove();
+                    synchronized (messageQueue) {
+                        outToServer.write(messageQueue.peek());
+                        outToServer.flush();
+                        messageQueue.remove();
+                    }
                 } catch (IOException e) {
                     System.out.println("Graylog is unavailable");
                 }
