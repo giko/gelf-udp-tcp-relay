@@ -11,17 +11,14 @@ import rx.functions.Func1;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.Socket;
 
 public class Main {
     private static FileObjectQueue<byte[]> messageQueue;
+    private static SocketFactory socketFactory;
+
 
     public static void main(String[] args) throws IOException {
-        Socket clientSocket = new Socket("gray", 9003);
-        clientSocket.setKeepAlive(true);
-        OutputStream outToServer = clientSocket.getOutputStream();
-
-        messageQueue = new FileObjectQueue<>(new File("fallback"),
+        messageQueue = new FileObjectQueue<>(new File(args[0]),
                 new FileObjectQueue.Converter<byte[]>() {
                     @Override public byte[] from(byte[] bytes) throws IOException {
                         return bytes;
@@ -32,30 +29,46 @@ public class Main {
                         outputStream.close();
                     }
                 });
-        Thread sender = new Thread(() -> {
-            while (messageQueue.size() != 0) {
+        socketFactory = new SocketFactory(args[1], Integer.valueOf(args[2]));
+
+        Runnable sender = () -> {
+            while (true) {
                 try {
-                    synchronized (messageQueue) {
-                        outToServer.write(messageQueue.peek());
-                        outToServer.flush();
-                        messageQueue.remove();
+                    while (messageQueue.size() > 0) {
+                        OutputStream outputStream = socketFactory.getSocket().getOutputStream();
+                        synchronized (messageQueue) {
+                            outputStream.write(messageQueue.peek());
+                            outputStream.flush();
+                            messageQueue.remove();
+                        }
                     }
+                    return;
                 } catch (IOException e) {
                     System.out.println("Graylog is unavailable");
+                    socketFactory.reset();
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e1) {
+                        e1.printStackTrace();
+                    }
                 }
             }
-        });
+        };
+        final Thread[] senderThread = { new Thread() };
 
         messageQueue.setListener(new ObjectQueue.Listener<byte[]>() {
             @Override public void onAdd(ObjectQueue<byte[]> queue, byte[] entry) {
-                sender.start();
+                if (!senderThread[0].isAlive()) {
+                    senderThread[0] = new Thread(sender);
+                    senderThread[0].start();
+                }
             }
 
             @Override public void onRemove(ObjectQueue<byte[]> queue) {
-
             }
         });
-        createServer(9003).startAndWait();
+        
+        createServer(Integer.valueOf(args[3])).startAndWait();
     }
 
     public static UdpServer<DatagramPacket, DatagramPacket> createServer(Integer port) {
@@ -64,8 +77,11 @@ public class Main {
                         .flatMap(new Func1<DatagramPacket, Observable<Void>>() {
                             @Override
                             public Observable<Void> call(DatagramPacket received) {
+                                byte[] data = new byte[received.content().readableBytes() + 1];
+                                data[data.length - 1] = 0;
+                                received.content().readBytes(data, 0, received.content().readableBytes());
                                 synchronized (messageQueue) {
-                                    messageQueue.add(received.content().array());
+                                    messageQueue.add(data);
                                 }
                                 return Observable.empty();
                             }
